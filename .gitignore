@@ -1,0 +1,7 @@
+/build/
+/results/*.jpg
+/results/*.jpeg
+/results/*.png
+__pycache__/
+*.py[cod]
+

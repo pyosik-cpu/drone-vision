@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "sg2002-release",
+      "displayName": "SG2002 RISC-V musl Release",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceDir}/build/sg2002-release",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/sg2002-musl.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "sg2002-release",
+      "configurePreset": "sg2002-release"
+    }
+  ]
+}
+

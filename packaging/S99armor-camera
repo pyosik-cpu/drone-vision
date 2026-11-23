@@ -1,0 +1,167 @@
+#!/bin/sh
+
+NAME="armor-camera"
+PROGRAM="/root/sg2002_armor_camera"
+MODEL="/root/yolov5_armor_320_bf16.cvimodel"
+CALIBRATION="/root/camera_calibration.ini"
+PIDFILE="/var/run/${NAME}.pid"
+ERROR_LOG="/tmp/${NAME}.err"
+SERIAL_DEVICE="/dev/ttyS3"
+SERIAL_BAUD="115200"
+MODULE_LOADER="/mnt/system/ko/loadsystemko.sh"
+
+PATH="/sbin:/usr/sbin:/bin:/usr/bin:/mnt/system/usr/bin"
+export PATH
+export LD_LIBRARY_PATH="/mnt/system/lib:/mnt/system/usr/lib:/mnt/system/usr/lib/3rd"
+
+read_pid() {
+  [ -r "$PIDFILE" ] || return 1
+  PID="$(sed -n '1p' "$PIDFILE")"
+  case "$PID" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+is_running() {
+  read_pid || return 1
+  kill -0 "$PID" 2>/dev/null || return 1
+  [ "$(readlink -f "/proc/$PID/exe" 2>/dev/null)" = "$PROGRAM" ]
+}
+
+find_existing_process() {
+  for PROCESS_PATH in /proc/[0-9]*; do
+    if [ "$(readlink -f "$PROCESS_PATH/exe" 2>/dev/null)" = "$PROGRAM" ]; then
+      basename "$PROCESS_PATH"
+      return 0
+    fi
+  done
+  return 1
+}
+
+load_media_modules() {
+  if [ -c /dev/cvi-sys ] && [ -c /dev/cvi-base ]; then
+    return 0
+  fi
+  if [ ! -r "$MODULE_LOADER" ]; then
+    echo "缺少多媒体模块加载脚本: $MODULE_LOADER" >&2
+    return 1
+  fi
+
+  echo "正在加载SG2002多媒体内核模块"
+  /bin/sh "$MODULE_LOADER" >>"$ERROR_LOG" 2>&1
+  for WAIT_SECONDS in 1 2 3 4 5 6 7 8 9 10; do
+    if [ -c /dev/cvi-sys ] && [ -c /dev/cvi-base ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "多媒体模块加载后仍缺少/dev/cvi-sys或/dev/cvi-base" >&2
+  return 1
+}
+
+start_service() {
+  if is_running; then
+    echo "$NAME 已在运行，PID=$PID"
+    return 0
+  fi
+
+  EXISTING_PID="$(find_existing_process)"
+  if [ -n "$EXISTING_PID" ]; then
+    echo "$NAME 已由其他方式运行，PID=$EXISTING_PID；请先停止该进程" >&2
+    return 1
+  fi
+
+  rm -f "$PIDFILE"
+  if [ ! -x "$PROGRAM" ]; then
+    echo "缺少可执行程序: $PROGRAM" >&2
+    return 1
+  fi
+  if [ ! -r "$MODEL" ]; then
+    echo "缺少模型: $MODEL" >&2
+    return 1
+  fi
+  if [ ! -r "$CALIBRATION" ]; then
+    echo "缺少相机标定配置: $CALIBRATION" >&2
+    return 1
+  fi
+  if [ ! -c "$SERIAL_DEVICE" ]; then
+    echo "缺少串口设备: $SERIAL_DEVICE" >&2
+    return 1
+  fi
+
+  : >"$ERROR_LOG"
+  if ! load_media_modules; then
+    echo "加载SG2002多媒体内核模块失败，查看 $ERROR_LOG" >&2
+    return 1
+  fi
+
+  if ! duo-pinmux -w GP4/UART3_TX >/dev/null 2>&1; then
+    echo "配置GP4为UART3_TX失败" >&2
+    return 1
+  fi
+
+  (
+    cd /root || exit 1
+    exec "$PROGRAM" "$MODEL" 0.5 0.45 0 any "$CALIBRATION" \
+      "$SERIAL_DEVICE" "$SERIAL_BAUD" >/dev/null 2>"$ERROR_LOG"
+  ) &
+  PID=$!
+  echo "$PID" >"$PIDFILE"
+
+  sleep 2
+  if ! is_running; then
+    echo "$NAME 启动失败，查看 $ERROR_LOG" >&2
+    rm -f "$PIDFILE"
+    return 1
+  fi
+  echo "$NAME 已启动，PID=$PID"
+}
+
+stop_service() {
+  if ! is_running; then
+    echo "$NAME 未运行"
+    rm -f "$PIDFILE"
+    return 0
+  fi
+
+  kill -TERM "$PID" 2>/dev/null
+  for WAIT_SECONDS in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$PID" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$PID" 2>/dev/null; then
+    echo "$NAME 未能及时退出，发送KILL" >&2
+    kill -KILL "$PID" 2>/dev/null
+  fi
+  rm -f "$PIDFILE"
+  echo "$NAME 已停止"
+}
+
+status_service() {
+  if is_running; then
+    echo "$NAME 正在运行，PID=$PID"
+    return 0
+  fi
+  echo "$NAME 未运行"
+  return 1
+}
+
+case "$1" in
+  start)
+    start_service
+    ;;
+  stop)
+    stop_service
+    ;;
+  restart)
+    stop_service && start_service
+    ;;
+  status)
+    status_service
+    ;;
+  *)
+    echo "用法: $0 {start|stop|restart|status}" >&2
+    exit 2
+    ;;
+esac
